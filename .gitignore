@@ -1,0 +1,8 @@
+@"
+gpt-env/
+__pycache__/
+*.pyc
+checkpoints/
+logs/
+.ipynb_checkpoints/
+"@ | Set-Content .gitignore
