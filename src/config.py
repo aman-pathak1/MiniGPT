@@ -9,14 +9,17 @@ class GPTConfig:
     # Model Architecture
     # ==========================
 
-    vocab_size: int = 1000
-    context_length: int = 128
+    vocab_size: int = 50257
+
+    context_length: int = 512
     max_position_embeddings: int = 512
 
-    embedding_dim: int = 256
-    num_heads: int = 4
-    num_layers: int = 4
-    ffn_dim: int = 1024
+    embedding_dim: int = 384
+
+    num_heads: int = 6
+    num_layers: int = 6
+
+    ffn_dim: int = 1536
 
     dropout: float = 0.1
     layer_norm_eps: float = 1e-5
@@ -30,7 +33,7 @@ class GPTConfig:
     # Training
     # ==========================
 
-    batch_size: int = 32
+    batch_size: int = 8
     epochs: int = 10
 
     learning_rate: float = 3e-4
@@ -48,11 +51,12 @@ class GPTConfig:
     # Generation
     # ==========================
 
-    temperature: float = 1.0
+    temperature: float = 0.8
+
     top_k: int = 50
     top_p: float = 0.95
 
-    max_new_tokens: int = 100
+    max_new_tokens: int = 150
 
     # ==========================
     # Checkpoints
@@ -68,4 +72,5 @@ class GPTConfig:
     # ==========================
 
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
+
     seed: int = 42

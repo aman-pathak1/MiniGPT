@@ -2,7 +2,8 @@ import tiktoken
 
 
 class GPTTokenizer:
-    def __init__(self, encoding_name="o200k_base"):
+
+    def __init__(self, encoding_name="gpt2"):
         self.encoding = tiktoken.get_encoding(encoding_name)
 
     def encode(self, text: str):

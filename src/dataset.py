@@ -4,7 +4,6 @@ from torch.utils.data import Dataset
 from src.config import GPTConfig
 from src.tokenizer import GPTTokenizer
 
-
 class GPTDataset(Dataset):
 
     def __init__(self, file_path: str, config: GPTConfig):

@@ -1,10 +1,11 @@
 import os
 import math
 import time
+
 import torch
 import torch.nn as nn
 
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
 
 from src.config import GPTConfig
@@ -14,13 +15,20 @@ from src.model import GPTModel
 
 
 def set_seed(seed: int):
+
     torch.manual_seed(seed)
 
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
 
-def evaluate(model, data_loader, device, loss_fn, use_amp):
+def evaluate(
+    model,
+    data_loader,
+    device,
+    loss_fn,
+    use_amp
+):
 
     model.eval()
 
@@ -31,8 +39,15 @@ def evaluate(model, data_loader, device, loss_fn, use_amp):
 
         for input_ids, target_ids in data_loader:
 
-            input_ids = input_ids.to(device, non_blocking=True)
-            target_ids = target_ids.to(device, non_blocking=True)
+            input_ids = input_ids.to(
+                device,
+                non_blocking=True
+            )
+
+            target_ids = target_ids.to(
+                device,
+                non_blocking=True
+            )
 
             if use_amp:
 
@@ -40,6 +55,7 @@ def evaluate(model, data_loader, device, loss_fn, use_amp):
                     device_type="cuda",
                     dtype=torch.float16
                 ):
+
                     logits = model(input_ids)
 
                     loss = loss_fn(
@@ -70,24 +86,30 @@ def evaluate(model, data_loader, device, loss_fn, use_amp):
 def save_checkpoint(
     model,
     optimizer,
+    scheduler,
     epoch,
     step,
     train_loss,
     val_loss,
-    config
+    config,
+    filename
 ):
 
-    os.makedirs(config.checkpoint_dir, exist_ok=True)
+    os.makedirs(
+        config.checkpoint_dir,
+        exist_ok=True
+    )
 
     checkpoint_path = os.path.join(
         config.checkpoint_dir,
-        f"checkpoint_epoch_{epoch}_step_{step}.pt"
+        filename
     )
 
     torch.save(
         {
             "model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
+            "scheduler_state_dict": scheduler.state_dict(),
             "epoch": epoch,
             "step": step,
             "train_loss": train_loss,
@@ -97,20 +119,65 @@ def save_checkpoint(
         checkpoint_path
     )
 
-    print(f"\nCheckpoint saved: {checkpoint_path}")
+    print(
+        f"\nCheckpoint saved: {checkpoint_path}"
+    )
+
+
+def create_scheduler(
+    optimizer,
+    warmup_steps,
+    total_steps
+):
+
+    def lr_lambda(current_step):
+
+        # Warmup
+        if current_step < warmup_steps:
+
+            return float(current_step + 1) / max(
+                1,
+                warmup_steps
+            )
+
+        # Cosine decay
+        progress = (
+            current_step - warmup_steps
+        ) / max(
+            1,
+            total_steps - warmup_steps
+        )
+
+        progress = min(
+            max(progress, 0.0),
+            1.0
+        )
+
+        return 0.5 * (
+            1.0 + math.cos(
+                math.pi * progress
+            )
+        )
+
+    return torch.optim.lr_scheduler.LambdaLR(
+        optimizer,
+        lr_lambda
+    )
 
 
 def main():
 
-    # ==========================
+    # ============================================================
     # Configuration
-    # ==========================
+    # ============================================================
 
     config = GPTConfig()
 
     set_seed(config.seed)
 
-    device = torch.device(config.device)
+    device = torch.device(
+        config.device
+    )
 
     print("=" * 60)
     print("MiniGPT Training")
@@ -120,53 +187,88 @@ def main():
 
     if device.type == "cuda":
 
-        print(f"GPU: {torch.cuda.get_device_name(0)}")
+        print(
+            f"GPU: {torch.cuda.get_device_name(0)}"
+        )
 
         print(
             f"GPU Memory: "
             f"{torch.cuda.get_device_properties(0).total_memory / 1024**3:.2f} GB"
         )
 
-    # ==========================
+    # ============================================================
     # Tokenizer
-    # ==========================
+    # ============================================================
 
     tokenizer = GPTTokenizer()
 
     config.vocab_size = tokenizer.vocab_size
 
-    print(f"Vocabulary Size: {config.vocab_size}")
+    print(
+        f"Vocabulary Size: {config.vocab_size}"
+    )
 
-    # ==========================
+    # ============================================================
     # Dataset
-    # ==========================
+    # ============================================================
 
     dataset = GPTDataset(
         file_path="data/tiny_shakespeare.txt",
         config=config
     )
 
-    print(f"Total Dataset Samples: {len(dataset):,}")
-
-    # ==========================
-    # Train / Validation Split
-    # ==========================
-
-    train_size = int(0.9 * len(dataset))
-    val_size = len(dataset) - train_size
-
-    train_dataset, val_dataset = random_split(
-        dataset,
-        [train_size, val_size],
-        generator=torch.Generator().manual_seed(config.seed)
+    print(
+        f"Total Dataset Samples: {len(dataset):,}"
     )
 
-    print(f"Training Samples:   {len(train_dataset):,}")
-    print(f"Validation Samples: {len(val_dataset):,}")
+    # ============================================================
+    # Train / Validation Split
+    # ============================================================
 
-    # ==========================
+    total_samples = len(dataset)
+
+    split_index = int(
+        0.9 * total_samples
+    )
+
+    # Keep a context-length gap between
+    # training and validation windows.
+    train_end = max(
+        0,
+        split_index - config.context_length
+    )
+
+    train_indices = range(
+        0,
+        train_end
+    )
+
+    val_indices = range(
+        split_index,
+        total_samples
+    )
+
+    train_dataset = Subset(
+        dataset,
+        train_indices
+    )
+
+    val_dataset = Subset(
+        dataset,
+        val_indices
+    )
+
+    print(
+        f"Training Samples:   {len(train_dataset):,}"
+    )
+
+    print(
+        f"Validation Samples: {len(val_dataset):,}"
+    )
+
+    # ============================================================
     # DataLoader
-    # ==========================
+    # ============================================================
 
     num_workers = 0
 
@@ -189,12 +291,17 @@ def main():
         pin_memory=device.type == "cuda"
     )
 
-    print(f"Training Batches:   {len(train_loader):,}")
-    print(f"Validation Batches: {len(val_loader):,}")
+    print(
+        f"Training Batches:   {len(train_loader):,}"
+    )
 
-    # ==========================
+    print(
+        f"Validation Batches: {len(val_loader):,}"
+    )
+
+    # ============================================================
     # Model
-    # ==========================
+    # ============================================================
 
     model = GPTModel(config)
 
@@ -211,18 +318,23 @@ def main():
         if parameter.requires_grad
     )
 
-    print(f"\nTotal Parameters:     {total_params:,}")
-    print(f"Trainable Parameters: {trainable_params:,}")
+    print(
+        f"\nTotal Parameters:     {total_params:,}"
+    )
 
-    # ==========================
+    print(
+        f"Trainable Parameters: {trainable_params:,}"
+    )
+
+    # ============================================================
     # Loss
-    # ==========================
+    # ============================================================
 
     loss_fn = nn.CrossEntropyLoss()
 
-    # ==========================
+    # ============================================================
     # Optimizer
-    # ==========================
+    # ============================================================
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -235,39 +347,75 @@ def main():
         weight_decay=config.weight_decay
     )
 
-    # ==========================
+    # ============================================================
+    # Learning Rate Scheduler
+    # ============================================================
+
+    total_steps = (
+        config.epochs *
+        len(train_loader)
+    )
+
+    scheduler = create_scheduler(
+        optimizer=optimizer,
+        warmup_steps=config.warmup_steps,
+        total_steps=total_steps
+    )
+
+    print(
+        f"Total Training Steps: {total_steps:,}"
+    )
+
+    print(
+        f"Warmup Steps:         {config.warmup_steps:,}"
+    )
+
+    # ============================================================
     # Mixed Precision
-    # ==========================
+    # ============================================================
 
     use_amp = device.type == "cuda"
 
     if use_amp:
 
-        scaler = torch.amp.GradScaler("cuda")
+        scaler = torch.amp.GradScaler(
+            "cuda"
+        )
 
-        print("Mixed Precision: Enabled")
+        print(
+            "Mixed Precision: Enabled"
+        )
 
     else:
 
         scaler = None
 
-        print("Mixed Precision: Disabled")
+        print(
+            "Mixed Precision: Disabled"
+        )
 
-    # ==========================
-    # Training
-    # ==========================
+    # ============================================================
+    # Training State
+    # ============================================================
 
     global_step = 0
 
     best_val_loss = float("inf")
 
+    running_loss = 0.0
+
     model.train()
 
-    for epoch in range(1, config.epochs + 1):
+    # ============================================================
+    # Training Loop
+    # ============================================================
+
+    for epoch in range(
+        1,
+        config.epochs + 1
+    ):
 
         epoch_start = time.time()
-
-        running_loss = 0.0
 
         progress_bar = tqdm(
             train_loader,
@@ -286,11 +434,13 @@ def main():
                 non_blocking=True
             )
 
-            optimizer.zero_grad(set_to_none=True)
+            optimizer.zero_grad(
+                set_to_none=True
+            )
 
-            # ==========================
+            # ====================================================
             # Forward Pass
-            # ==========================
+            # ====================================================
 
             if use_amp:
 
@@ -299,38 +449,52 @@ def main():
                     dtype=torch.float16
                 ):
 
-                    logits = model(input_ids)
+                    logits = model(
+                        input_ids
+                    )
 
                     loss = loss_fn(
-                        logits.reshape(-1, logits.size(-1)),
+                        logits.reshape(
+                            -1,
+                            logits.size(-1)
+                        ),
                         target_ids.reshape(-1)
                     )
 
-                # ==========================
+                # =================================================
                 # Backward Pass
-                # ==========================
+                # =================================================
 
-                scaler.scale(loss).backward()
+                scaler.scale(
+                    loss
+                ).backward()
 
-                # Unscale before gradient clipping
-
-                scaler.unscale_(optimizer)
+                scaler.unscale_(
+                    optimizer
+                )
 
                 torch.nn.utils.clip_grad_norm_(
                     model.parameters(),
                     config.gradient_clip
                 )
 
-                scaler.step(optimizer)
+                scaler.step(
+                    optimizer
+                )
 
                 scaler.update()
 
             else:
 
-                logits = model(input_ids)
+                logits = model(
+                    input_ids
+                )
 
                 loss = loss_fn(
-                    logits.reshape(-1, logits.size(-1)),
+                    logits.reshape(
+                        -1,
+                        logits.size(-1)
+                    ),
                     target_ids.reshape(-1)
                 )
 
@@ -343,9 +507,15 @@ def main():
 
                 optimizer.step()
 
-            # ==========================
+            # ====================================================
+            # Learning Rate Update
+            # ====================================================
+
+            scheduler.step()
+
+            # ====================================================
             # Logging
-            # ==========================
+            # ====================================================
 
             loss_value = loss.item()
 
@@ -353,31 +523,108 @@ def main():
 
             global_step += 1
 
-            average_loss = running_loss / (
-                global_step % len(train_loader)
-                if global_step % len(train_loader) != 0
-                else len(train_loader)
-            )
+            current_lr = optimizer.param_groups[0]["lr"]
 
             progress_bar.set_postfix(
-                loss=f"{loss_value:.4f}"
+                loss=f"{loss_value:.4f}",
+                lr=f"{current_lr:.2e}"
             )
 
-        # ==========================
+            # ====================================================
+            # Evaluation Every N Steps
+            # ====================================================
+
+            if (
+                global_step % config.eval_every == 0
+            ):
+
+                val_loss = evaluate(
+                    model=model,
+                    data_loader=val_loader,
+                    device=device,
+                    loss_fn=loss_fn,
+                    use_amp=use_amp
+                )
+
+                val_perplexity = math.exp(
+                    min(val_loss, 20)
+                )
+
+                print(
+                    f"\nStep {global_step:,}"
+                )
+
+                print(
+                    f"Validation Loss: {val_loss:.4f}"
+                )
+
+                print(
+                    f"Validation PPL:  {val_perplexity:.2f}"
+                )
+
+                # ================================================
+                # Save Best Model
+                # ================================================
+
+                if val_loss < best_val_loss:
+
+                    best_val_loss = val_loss
+
+                    save_checkpoint(
+                        model=model,
+                        optimizer=optimizer,
+                        scheduler=scheduler,
+                        epoch=epoch,
+                        step=global_step,
+                        train_loss=loss_value,
+                        val_loss=val_loss,
+                        config=config,
+                        filename="best_model.pt"
+                    )
+
+            # ====================================================
+            # Save Checkpoint Every N Steps
+            # ====================================================
+
+            if (
+                global_step % config.save_every == 0
+            ):
+
+                save_checkpoint(
+                    model=model,
+                    optimizer=optimizer,
+                    scheduler=scheduler,
+                    epoch=epoch,
+                    step=global_step,
+                    train_loss=loss_value,
+                    val_loss=best_val_loss,
+                    config=config,
+                    filename=f"checkpoint_step_{global_step}.pt"
+                )
+
+        # ========================================================
         # Epoch Statistics
-        # ==========================
+        # ========================================================
 
-        train_loss = running_loss / len(train_loader)
-
-        val_loss = evaluate(
-            model,
-            val_loader,
-            device,
-            loss_fn,
-            use_amp
+        train_loss = (
+            running_loss /
+            len(train_loader)
         )
 
-        epoch_time = time.time() - epoch_start
+        running_loss = 0.0
+
+        val_loss = evaluate(
+            model=model,
+            data_loader=val_loader,
+            device=device,
+            loss_fn=loss_fn,
+            use_amp=use_amp
+        )
+
+        epoch_time = (
+            time.time() -
+            epoch_start
+        )
 
         train_perplexity = math.exp(
             min(train_loss, 20)
@@ -387,55 +634,65 @@ def main():
             min(val_loss, 20)
         )
 
-        print("\n" + "=" * 60)
+        print(
+            "\n" + "=" * 60
+        )
 
-        print(f"Epoch: {epoch}/{config.epochs}")
-        print(f"Train Loss: {train_loss:.4f}")
-        print(f"Val Loss:   {val_loss:.4f}")
+        print(
+            f"Epoch: {epoch}/{config.epochs}"
+        )
 
-        print(f"Train PPL:  {train_perplexity:.2f}")
-        print(f"Val PPL:    {val_perplexity:.2f}")
+        print(
+            f"Train Loss: {train_loss:.4f}"
+        )
 
-        print(f"Time:       {epoch_time:.2f}s")
+        print(
+            f"Val Loss:   {val_loss:.4f}"
+        )
 
-        print("=" * 60)
+        print(
+            f"Train PPL:  {train_perplexity:.2f}"
+        )
 
-        # ==========================
-        # Best Model
-        # ==========================
+        print(
+            f"Val PPL:    {val_perplexity:.2f}"
+        )
+
+        print(
+            f"Learning Rate: {optimizer.param_groups[0]['lr']:.2e}"
+        )
+
+        print(
+            f"Time:       {epoch_time:.2f}s"
+        )
+
+        print(
+            "=" * 60
+        )
+
+        # ========================================================
+        # Epoch-End Best Model Check
+        # ========================================================
 
         if val_loss < best_val_loss:
 
             best_val_loss = val_loss
 
-            os.makedirs(
-                config.checkpoint_dir,
-                exist_ok=True
+            save_checkpoint(
+                model=model,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                epoch=epoch,
+                step=global_step,
+                train_loss=train_loss,
+                val_loss=val_loss,
+                config=config,
+                filename="best_model.pt"
             )
 
-            best_model_path = os.path.join(
-                config.checkpoint_dir,
-                "best_model.pt"
-            )
-
-            torch.save(
-                {
-                    "model_state_dict": model.state_dict(),
-                    "optimizer_state_dict": optimizer.state_dict(),
-                    "epoch": epoch,
-                    "step": global_step,
-                    "train_loss": train_loss,
-                    "val_loss": val_loss,
-                    "config": config,
-                },
-                best_model_path
-            )
-
-            print(
-                f"Best model saved: {best_model_path}"
-            )
-
-    print("\nTraining Complete!")
+    print(
+        "\nTraining Complete!"
+    )
 
 
 if __name__ == "__main__":
